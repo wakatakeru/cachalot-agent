@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"fmt"
+	"strings"
 	"time"
 	"net/http"
 	"github.com/shirou/gopsutil/cpu"
@@ -34,6 +35,8 @@ func memHandler(w http.ResponseWriter, r *http.Request) {
 func containerHandler(w http.ResponseWriter, r *http.Request) {
 	command, _ := r.URL.Query()["command"]
 	fmt.Fprintf(w, "%s\n", string(command[0]))
+
+	fmt.Printf("Command:%v\n", command)
 	
 	ctx := context.Background()
 	cli, err := client.NewClientWithOpts(client.WithVersion("1.37"))
@@ -49,9 +52,10 @@ func containerHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: "alpine",
-		Cmd:   command, //[]string{"echo", "$SHELL"},
+		Cmd:   strings.Split(command[0], " ")[:],  // []string{"echo", "hello"},
 		Tty:   true,
 	}, nil, nil, "")
+	
 	if err != nil {
 		panic(err)
 	}
@@ -82,6 +86,7 @@ func containerHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	http.HandleFunc("/", cpuHandler)
 	http.HandleFunc("/cpu", cpuHandler)
 	http.HandleFunc("/mem", memHandler)
 	http.HandleFunc("/container", containerHandler)
