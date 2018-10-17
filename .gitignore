@@ -68,7 +68,7 @@ flycheck_*.el
 capybara-*.html
 .rspec
 /log
-/tmp
+server/tmp
 /db/*.sqlite3
 /db/*.sqlite3-journal
 /public/system
