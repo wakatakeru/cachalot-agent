@@ -1,30 +1,32 @@
 package main
 
 import (
-  "encoding/json"
-	"encoding/base64"
-  "strconv"
-	"crypto/rand"
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
-	"fmt"
+	"strconv"
 	"time"
-	"net/http"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
+
 	"golang.org/x/net/context"
 )
 
 type Recipe struct {
 	Command []string `json:"command"`
-	Image string `json:"image"`
-	Data string `json:"data"`
+	Image   string   `json:"image"`
+	Data    string   `json:"data"`
 }
 
 func secureRandomStr(b int) string {
@@ -36,14 +38,14 @@ func secureRandomStr(b int) string {
 }
 
 func cpuHandler(w http.ResponseWriter, r *http.Request) {
-	v, _ := cpu.Percent(time.Duration(1 * time.Second), true)
+	v, _ := cpu.Percent(time.Duration(1*time.Second), true)
 	sum := 0.0
 
 	for i := 0; i < len(v); i++ {
 		sum += v[i]
 	}
-	
-	fmt.Fprintf(w, "%f\n", sum / float64(len(v)))
+
+	fmt.Fprintf(w, "%f\n", sum/float64(len(v)))
 }
 
 func memHandler(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +69,7 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	
+
 	body := make([]byte, length)
 	body, err = ioutil.ReadAll(r.Body)
 	if err != nil && err != io.EOF {
@@ -82,19 +84,19 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if jsonBody.Data == ""  || jsonBody.Command == nil || jsonBody.Image == "" {
+	if jsonBody.Data == "" || jsonBody.Command == nil || jsonBody.Image == "" {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	
+
 	data, _ := base64.StdEncoding.DecodeString(jsonBody.Data)
 	execName := secureRandomStr(8)
-	
-	if err := os.Mkdir("./tmp/" + execName, 0777); err != nil {
+
+	if err := os.Mkdir("./tmp/"+execName, 0777); err != nil {
 		fmt.Println(err)
 	}
-	
-	ioutil.WriteFile("./tmp/" + execName + "/data.tar", data, 0755)
+
+	ioutil.WriteFile("./tmp/"+execName+"/data.tar", data, 0755)
 
 	command := jsonBody.Command
 	image := jsonBody.Image
@@ -116,22 +118,22 @@ func containerExecutor(imageName string, command []string, execName string) stri
 	if err != nil {
 		panic(err)
 	}
-	io.Copy(os.Stdout, reader)		
+	io.Copy(os.Stdout, reader)
 
 	currentDir, _ := os.Getwd()
 
 	fileDir := currentDir + "/tmp/" + execName
-	exec.Command("tar", "xvf", fileDir + "/data.tar", "-C", fileDir).Run()
-	
+	exec.Command("tar", "xvf", fileDir+"/data.tar", "-C", fileDir).Run()
+
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
-		Image: imageName,
+		Image:      imageName,
 		WorkingDir: "/tmp",
-		Cmd:   command, //strings.Split(command[0], " ")[:],  // []string{"echo", "hello"},
-		Tty:   true,
-	},&container.HostConfig{
+		Cmd:        command, //strings.Split(command[0], " ")[:],  // []string{"echo", "hello"},
+		Tty:        true,
+	}, &container.HostConfig{
 		Binds: []string{fileDir + ":/tmp"},
 	}, nil, "")
-	
+
 	if err != nil {
 		panic(err)
 	}
