@@ -33,6 +33,11 @@ type Recipe struct {
 	Data    string   `json:"data"`
 }
 
+type Result struct {
+	Stdout string `json:"stdout"`
+	Data   string `json:"data"`
+}
+
 var ctx = context.Background()
 var cli, _ = client.NewClientWithOpts(client.WithVersion("1.39"))
 
@@ -82,22 +87,52 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 
 	data, _ := base64.StdEncoding.DecodeString(jsonBody.Data)
 	execName := secureRandomStr(8)
-
-	if err := os.Mkdir("./tmp/"+execName, 0777); err != nil {
+	currentDir, _ := os.Getwd()
+	dir := currentDir+"/tmp/"+execName
+	
+	if err := os.Mkdir(dir, 0777); err != nil {
 		fmt.Println(err)
 	}
-
-	ioutil.WriteFile("./tmp/"+execName+"/data.tar", data, 0755)
-
+	// defer os.RemoveAll(dir)
+	
+	ioutil.WriteFile(dir+"/data.tar", data, 0755)
+	exec.Command("tar", "xvf", dir+"/data.tar", "-C", dir).Run()
+	
 	command := jsonBody.Command
 	image := jsonBody.Image
 
 	result := containerExecutor(image, command, execName, w)
 
-	defer os.RemoveAll("./tmp/" + execName)
+	if err := os.Remove(dir+"/data.tar"); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	
+	var resultBody Result;
 
+	os.Chdir(dir)
+	exec.Command("tar", "cvf", "result.tar", ".").Run()
+	os.Chdir(currentDir)
+	
+	buf, err := ioutil.ReadFile(dir+"/result.tar")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	
+	resultData := base64.StdEncoding.EncodeToString(buf)
+	
+	resultBody.Stdout = result
+	resultBody.Data = resultData
+
+	resultJsonBytes, err := json.Marshal(resultBody)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "%v\n", result)
+	fmt.Fprintf(w, "%v\n", string(resultJsonBytes))
 }
 
 func containerExecutor(imageName string, command []string, execName string, w http.ResponseWriter) string {
@@ -111,7 +146,6 @@ func containerExecutor(imageName string, command []string, execName string, w ht
 	currentDir, _ := os.Getwd()
 
 	fileDir := currentDir + "/tmp/" + execName
-	exec.Command("tar", "xvf", fileDir+"/data.tar", "-C", fileDir).Run()
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image:      imageName,
