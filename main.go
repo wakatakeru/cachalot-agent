@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -12,7 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
-
+	"mime/multipart"
+	
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -38,95 +39,92 @@ type Result struct {
 var ctx = context.Background()
 var cli, _ = client.NewClientWithOpts(client.WithVersion("1.39"))
 
-func secureRandomStr(b int) string {
-	k := make([]byte, b)
-	if _, err := rand.Read(k); err != nil {
-		panic(err)
+func isCorrectRequest(r *http.Request) error {
+	if r.Method != "POST" {
+		return errors.New("Method is not POST")
 	}
-	return fmt.Sprintf("%x", k)
+
+	if _, _, err := r.FormFile("recipe"); err != nil {
+		return err
+	}
+
+	if _, _, err := r.FormFile("recipe"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func unmarshalRecipeJSON(recipeBytes []byte, recipeJSON *Recipe) error {
+	if err := json.Unmarshal(recipeBytes, &recipeJSON); err != nil {
+		return err
+	}
+
+	if recipeJSON.Command == nil || recipeJSON.Image == "" {
+		return errors.New("Can not parse Recipe JSON")
+	}
+
+	return nil
+}
+
+func paramsString(r *http.Request) (data multipart.File, recipe multipart.File, err error){
+	dataString, _, err := r.FormFile("data")
+	defer dataString.Close()
+
+	recipeString, _, err := r.FormFile("recipe")
+	defer recipeString.Close()
+
+	return dataString, recipeString, err
 }
 
 func execHandler(w http.ResponseWriter, r *http.Request) {
-	execName := secureRandomStr(16)
-	currentDir, _ := os.Getwd()
-	dir := currentDir + "/tmp/" + execName
-	
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	
-	data_file, _, err := r.FormFile("data")
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		panic(err)
-		return
-	}
-	defer data_file.Close()
-
-	recipe_file, _, err := r.FormFile("recipe")
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		panic(err)
-		return
-	}
-	defer recipe_file.Close()
-	
-	recipe_byte, _ := ioutil.ReadAll(io.Reader(recipe_file))
-	
-	var jsonBody Recipe
-	err = json.Unmarshal(recipe_byte, &jsonBody)
-	if err != nil {
-		panic(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	
-	if jsonBody.Command == nil || jsonBody.Image == "" {
-		panic(err)
+	if err := isCorrectRequest(r); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	if err := os.Mkdir(dir, 0777); err != nil {
-		fmt.Println(err)
+	tempDir, err := ioutil.TempDir("", "peb-agent")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	dataString, recipeString, _ := paramsString(r)
+	recipeBytes, _ := ioutil.ReadAll(io.Reader(recipeString))
+
+	var recipe Recipe
+	if err = unmarshalRecipeJSON(recipeBytes, &recipe); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
-	f, err := os.Create(dir+"/data.tar")
+	f, err := os.Create(tempDir + "/data.tar")
 	if err != nil {
-		panic(err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()
-	io.Copy(f, data_file)
-	
-	exec.Command("tar", "xvf", dir+"/data.tar", "-C", dir).Run()
+	io.Copy(f, dataString)
 
-	command := jsonBody.Command
-	image := jsonBody.Image
+	exec.Command("tar", "xvf", tempDir+"/data.tar", "-C", tempDir).Run()
 
-	result := containerExecutor(image, command, execName, w)
+	command := recipe.Command
+	image := recipe.Image
 
-	if err := os.Remove(dir + "/data.tar"); err != nil {
-		panic(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	result := containerExecutor(image, command, tempDir, w)
 
-	var resultBody Result
-
-	os.Chdir(dir)
+	os.Chdir(tempDir)
 	exec.Command("tar", "cvf", "result.tar", ".").Run()
-	os.Chdir(currentDir)
 
-	_, err = ioutil.ReadFile(dir + "/result.tar")    // TODO: resultをサーブする
+	_, err = ioutil.ReadFile(tempDir + "/result.tar") // TODO: resultをサーブする
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	resultBody.ID = execName
+	var resultBody Result
+	resultBody.ID = "pending"  // TODO: pending
 	resultBody.Stdout = result
 
 	resultJsonBytes, err := json.Marshal(resultBody)
@@ -140,7 +138,7 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%v\n", string(resultJsonBytes))
 }
 
-func containerExecutor(imageName string, command []string, execName string, w http.ResponseWriter) string {
+func containerExecutor(imageName string, command []string, workDir string, w http.ResponseWriter) string {
 	reader, err := cli.ImagePull(ctx, imageName, types.ImagePullOptions{})
 	if err != nil {
 		panic(err)
@@ -148,10 +146,6 @@ func containerExecutor(imageName string, command []string, execName string, w ht
 		return "error"
 	}
 	io.Copy(os.Stdout, reader)
-
-	currentDir, _ := os.Getwd()
-
-	fileDir := currentDir + "/tmp/" + execName
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image:      imageName,
@@ -164,7 +158,7 @@ func containerExecutor(imageName string, command []string, execName string, w ht
 			Retries:  10,
 		},
 	}, &container.HostConfig{
-		Binds: []string{fileDir + ":/tmp"},
+		Binds: []string{workDir + ":/tmp"},
 	}, nil, "")
 
 	if err != nil {
