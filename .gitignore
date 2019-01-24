@@ -193,5 +193,6 @@ tags
 # Persistent undo
 [._]*.un~
 
+peb-agent
 
 # End of https://www.gitignore.io/api/go,vim,ruby,rails,emacs

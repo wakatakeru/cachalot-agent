@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
-	"strconv"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -30,12 +28,11 @@ import (
 type Recipe struct {
 	Command []string `json:"command"`
 	Image   string   `json:"image"`
-	Data    string   `json:"data"`
 }
 
 type Result struct {
+	ID     string `json:id`
 	Stdout string `json:"stdout"`
-	Data   string `json:"data"`
 }
 
 var ctx = context.Background()
@@ -50,87 +47,95 @@ func secureRandomStr(b int) string {
 }
 
 func execHandler(w http.ResponseWriter, r *http.Request) {
+	execName := secureRandomStr(16)
+	currentDir, _ := os.Getwd()
+	dir := currentDir + "/tmp/" + execName
+	
 	if r.Method != "POST" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
-	if r.Header.Get("Content-Type") != "application/json" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	length, err := strconv.Atoi(r.Header.Get("Content-Length"))
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	body := make([]byte, length)
-	body, err = ioutil.ReadAll(r.Body)
-	if err != nil && err != io.EOF {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	var jsonBody Recipe
-	err = json.Unmarshal(body[:length], &jsonBody)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	if jsonBody.Data == "" || jsonBody.Command == nil || jsonBody.Image == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	data, _ := base64.StdEncoding.DecodeString(jsonBody.Data)
-	execName := secureRandomStr(8)
-	currentDir, _ := os.Getwd()
-	dir := currentDir+"/tmp/"+execName
 	
+	data_file, _, err := r.FormFile("data")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		panic(err)
+		return
+	}
+	defer data_file.Close()
+
+	recipe_file, _, err := r.FormFile("recipe")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		panic(err)
+		return
+	}
+	defer recipe_file.Close()
+	
+	recipe_byte, _ := ioutil.ReadAll(io.Reader(recipe_file))
+	
+	var jsonBody Recipe
+	err = json.Unmarshal(recipe_byte, &jsonBody)
+	if err != nil {
+		panic(err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	
+	if jsonBody.Command == nil || jsonBody.Image == "" {
+		panic(err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	if err := os.Mkdir(dir, 0777); err != nil {
 		fmt.Println(err)
 	}
-	// defer os.RemoveAll(dir)
+
+	f, err := os.Create(dir+"/data.tar")
+	if err != nil {
+		panic(err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	io.Copy(f, data_file)
 	
-	ioutil.WriteFile(dir+"/data.tar", data, 0755)
 	exec.Command("tar", "xvf", dir+"/data.tar", "-C", dir).Run()
-	
+
 	command := jsonBody.Command
 	image := jsonBody.Image
 
 	result := containerExecutor(image, command, execName, w)
 
-	if err := os.Remove(dir+"/data.tar"); err != nil {
+	if err := os.Remove(dir + "/data.tar"); err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	
-	var resultBody Result;
+
+	var resultBody Result
 
 	os.Chdir(dir)
 	exec.Command("tar", "cvf", "result.tar", ".").Run()
 	os.Chdir(currentDir)
-	
-	buf, err := ioutil.ReadFile(dir+"/result.tar")
+
+	_, err = ioutil.ReadFile(dir + "/result.tar")    // TODO: resultをサーブする
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	
-	resultData := base64.StdEncoding.EncodeToString(buf)
-	
+
+	resultBody.ID = execName
 	resultBody.Stdout = result
-	resultBody.Data = resultData
 
 	resultJsonBytes, err := json.Marshal(resultBody)
 	if err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "%v\n", string(resultJsonBytes))
 }
@@ -138,6 +143,7 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 func containerExecutor(imageName string, command []string, execName string, w http.ResponseWriter) string {
 	reader, err := cli.ImagePull(ctx, imageName, types.ImagePullOptions{})
 	if err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
@@ -162,11 +168,13 @@ func containerExecutor(imageName string, command []string, execName string, w ht
 	}, nil, "")
 
 	if err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
 
 	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
@@ -175,6 +183,7 @@ func containerExecutor(imageName string, command []string, execName string, w ht
 	select {
 	case err := <-errCh:
 		if err != nil {
+			panic(err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return "error"
 		}
@@ -183,16 +192,19 @@ func containerExecutor(imageName string, command []string, execName string, w ht
 
 	out, err := cli.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true})
 	if err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
 
 	if err := cli.ContainerStop(ctx, resp.ID, nil); err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
 
 	if err := cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{Force: true}); err != nil {
+		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
