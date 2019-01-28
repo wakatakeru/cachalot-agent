@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"time"
-	"mime/multipart"
-	
+
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -32,8 +32,9 @@ type Recipe struct {
 }
 
 type Result struct {
-	ID     string `json:id`
+	ID     string `json:"id"`
 	Stdout string `json:"stdout"`
+	Data   []byte `json:"result_data"`
 }
 
 var ctx = context.Background()
@@ -67,7 +68,7 @@ func unmarshalRecipeJSON(recipeBytes []byte, recipeJSON *Recipe) error {
 	return nil
 }
 
-func paramsString(r *http.Request) (data multipart.File, recipe multipart.File, err error){
+func paramsString(r *http.Request) (data multipart.File, recipe multipart.File, err error) {
 	dataString, _, err := r.FormFile("data")
 	defer dataString.Close()
 
@@ -112,22 +113,27 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 	command := recipe.Command
 	image := recipe.Image
 
-	result := containerExecutor(image, command, tempDir, w)
+	resultStdout := containerExecutor(image, command, tempDir, w)
 
 	os.Chdir(tempDir)
+	os.Remove(tempDir + "/data.tar")
 	exec.Command("tar", "cvf", "result.tar", ".").Run()
 
-	_, err = ioutil.ReadFile(tempDir + "/result.tar") // TODO: resultをサーブする
+	resultData, err := ioutil.ReadFile(tempDir + "/result.tar") // TODO: resultをサーブする
+
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	var resultBody Result
-	resultBody.ID = "pending"  // TODO: pending
-	resultBody.Stdout = result
+	var result Result
+	result.ID = "pending" // TODO: pending
+	result.Stdout = resultStdout
+	result.Data = resultData
 
-	resultJsonBytes, err := json.Marshal(resultBody)
+	fmt.Println(result.Data)
+	
+	resultJSONBytes, err := json.Marshal(result)
 	if err != nil {
 		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -135,7 +141,7 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "%v\n", string(resultJsonBytes))
+	fmt.Fprintf(w, "%v\n", string(resultJSONBytes))
 }
 
 func containerExecutor(imageName string, command []string, workDir string, w http.ResponseWriter) string {
