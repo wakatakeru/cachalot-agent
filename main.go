@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ type Recipe struct {
 type Result struct {
 	ID     string `json:"id"`
 	Stdout string `json:"stdout"`
-	Data   []byte `json:"result_data"`
+	Data   string `json:"result_data"`
 }
 
 var ctx = context.Background()
@@ -129,13 +130,10 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 	var result Result
 	result.ID = "pending" // TODO: pending
 	result.Stdout = resultStdout
-	result.Data = resultData
-
-	fmt.Println(result.Data)
+	result.Data = base64.StdEncoding.EncodeToString(resultData)
 	
 	resultJSONBytes, err := json.Marshal(result)
 	if err != nil {
-		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -145,13 +143,11 @@ func execHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func containerExecutor(imageName string, command []string, workDir string, w http.ResponseWriter) string {
-	reader, err := cli.ImagePull(ctx, imageName, types.ImagePullOptions{})
+	_, err := cli.ImagePull(ctx, imageName, types.ImagePullOptions{})
 	if err != nil {
-		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
-	io.Copy(os.Stdout, reader)
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image:      imageName,
@@ -168,13 +164,11 @@ func containerExecutor(imageName string, command []string, workDir string, w htt
 	}, nil, "")
 
 	if err != nil {
-		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
 
 	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
-		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
@@ -183,7 +177,6 @@ func containerExecutor(imageName string, command []string, workDir string, w htt
 	select {
 	case err := <-errCh:
 		if err != nil {
-			panic(err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return "error"
 		}
@@ -192,7 +185,6 @@ func containerExecutor(imageName string, command []string, workDir string, w htt
 
 	out, err := cli.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true})
 	if err != nil {
-		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
@@ -204,7 +196,6 @@ func containerExecutor(imageName string, command []string, workDir string, w htt
 	}
 
 	if err := cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{Force: true}); err != nil {
-		panic(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return "error"
 	}
