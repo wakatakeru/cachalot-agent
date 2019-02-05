@@ -19,10 +19,10 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
-	"github.com/wakatakeru/cachalot/handler/status/cpu"
-	"github.com/wakatakeru/cachalot/handler/status/health"
-	"github.com/wakatakeru/cachalot/handler/status/load"
-	"github.com/wakatakeru/cachalot/handler/status/memory"
+	"github.com/wakatakeru/cachalot-agent/handler/status/cpu"
+	"github.com/wakatakeru/cachalot-agent/handler/status/health"
+	"github.com/wakatakeru/cachalot-agent/handler/status/load"
+	"github.com/wakatakeru/cachalot-agent/handler/status/memory"
 
 	"golang.org/x/net/context"
 )
